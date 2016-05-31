@@ -232,21 +232,23 @@ class FPGrowth private (
    * @return array of frequent pattern ordered by their frequencies
    */
   private def genFreqItems[Item: ClassTag](
-      data: RDD[Array[Item]],
-      minCount: Long,
-      partitioner: Partitioner): Array[Item] = {
-    data.flatMap { t =>
-      val uniq = t.toSet
-      if (t.length != uniq.size) {
+      data: RDD[Array[Item]],       //data는 transaction item들의 array.
+      minCount: Long,               //minCount는 support threshold값.
+      partitioner: Partitioner      //partitioner는 transaction item에 대해 reducing하는데 사용되는 partitioner.
+      ): Array[Item] = {data.flatMap { t => val uniq = t.toSet
+      /* Item들의 array를 생성, 이때 flatMap을 통해 각 set에 들어가는 transaction의 형태를 단순 원소로 변경.
+      *  이 안에있는 item들을 각각 중복되지 않는 단일 원소로 uniq라는 set에 삽입.
+      */
+      if (t.length != uniq.size){
         throw new SparkException(s"Items in a transaction must be unique but got ${t.toSeq}.")
-      }
-      t
-    }.map(v => (v, 1L))
-      .reduceByKey(partitioner, _ + _)
-      .filter(_._2 >= minCount)
-      .collect()
-      .sortBy(-_._2)
-      .map(_._1)
+      }     //set uniq의 크기와 Item들의 array인 t의 길이가 서로 다르면 예외로 처리하여 메시지를 출력.
+      t     //이렇게 해서 모든 원소가 unique한 itemset들을 생성.
+    }.map(v => (v, 1L))                 //생성된 set에 대해 mapping을 진행, 이때 각 transaction item array들의 subset(itemset)과, 해당 set의 출현빈도수를 값으로 가짐.
+      .reduceByKey(partitioner, _ + _)  //partitioner를 이용한 reducing과정, 각 itemset들의 출현 빈도수를 더함.
+      .filter(_._2 >= minCount)         //reducing되어 나온 값들 중 minCount값을 기준으로하여 minCount값보다 작은 itemset은 filtering
+      .collect()                        //각각의 reducing과정을 거친 itemset들을 다시 모아줌.
+      .sortBy(-_._2)                    //minCount이상의 빈도수를 가진 itemset들끼리 출현빈도수를 기준으로 sorting.
+      .map(_._1)                        //이들을 다시 mapping하여 array로 반환.
   }
 
   /**
@@ -258,21 +260,22 @@ class FPGrowth private (
    * @return an RDD of (frequent itemset, count)
    */
   private def genFreqItemsets[Item: ClassTag](
-      data: RDD[Array[Item]],
-      minCount: Long,
-      freqItems: Array[Item],
-      partitioner: Partitioner): RDD[FreqItemset[Item]] = {
-    val itemToRank = freqItems.zipWithIndex.toMap
-    data.flatMap { transaction =>
-      genCondTransactions(transaction, itemToRank, partitioner)
-    }.aggregateByKey(new FPTree[Int], partitioner.numPartitions)(
-      (tree, transaction) => tree.add(transaction, 1L),
-      (tree1, tree2) => tree1.merge(tree2))
+      data: RDD[Array[Item]],           //data는 transaction item들의 array.
+      minCount: Long,                   //minCount는 support threshold값.
+      freqItems: Array[Item],           //transaction으로부터 만들어진 itemset의 array. frequency에 따라 정렬됨.
+      partitioner: Partitioner): RDD[FreqItemset[Item]] = {         //FreqItemset을 만들고, 여기에 freqItems를
+    val itemToRank = freqItems.zipWithIndex.toMap                   //Index로 압축하여 Mapping한 itemToRank 변수를 생성.
+    data.flatMap { transaction =>       //genCondTransactions에 의해 발생한 transaction을 flatMapping.
+      genCondTransactions(transaction, itemToRank, partitioner)     //어떤 조건에 대한 transaction을 발생시키는 함수.
+    }.aggregateByKey(new FPTree[Int], partitioner.numPartitions)(   //FPTree를 만들고, 여기에 발생하는 transaction을 삽입.
+      (tree, transaction) => tree.add(transaction, 1L),             //tree에는 transaction자체를 삽입할 수도 있고,
+      (tree1, tree2) => tree1.merge(tree2))                         //이미 구성된 다른 tree를 추가할 수도 있음.
     .flatMap { case (part, tree) =>
       tree.extract(minCount, x => partitioner.getPartition(x) == part)
-    }.map { case (ranks, count) =>
+    }   //Key를 기준으로 만든 FPTree에서 minCount이상을 만족하는 부분을 추출하여 flatMapping.
+    .map { case (ranks, count) =>
       new FreqItemset(ranks.map(i => freqItems(i)).toArray, count)
-    }
+    }   //flatMapping된 값을 빈도수별로 랭크를 매기고, 이를 mapping하여 FreqItemset array를 생성하고 반환.
   }
 
   /**
